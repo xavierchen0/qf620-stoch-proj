@@ -66,8 +66,6 @@ def load_option_book(option_type: str) -> pd.DataFrame:
             quote_date = pd.to_datetime(stem_parts[0])
             expiry = pd.to_datetime(stem_parts[-1])
             bid_path = ask_path.with_name(ask_path.name.replace("_ask_", "_bid_"))
-            if not bid_path.exists():
-                continue
 
             ask_frame = melt_option_quotes(parse_timestamped_csv(ask_path), "ask")
             bid_frame = melt_option_quotes(parse_timestamped_csv(bid_path), "bid")
