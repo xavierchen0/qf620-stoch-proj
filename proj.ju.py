@@ -78,8 +78,6 @@ def load_option_book(option_type: str) -> pd.DataFrame:
             merged["expiry"] = expiry
             merged["session"] = session
             merged["mid"] = merged[["bid", "ask"]].mean(axis=1)
-            # merged = merged.dropna(subset=["strike"])
-            # merged = merged.dropna(subset=["bid", "ask"], how="all")
 
             records.append(merged)
 
