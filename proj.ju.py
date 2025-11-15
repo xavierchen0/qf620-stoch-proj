@@ -18,6 +18,7 @@
 # %%
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 pd.options.display.width = 140
@@ -104,6 +105,85 @@ def load_assets() -> pd.DataFrame:
 
 
 # %% [markdown]
+# ## Visualization Utilities
+
+
+# %%
+# Provide reusable plotting helpers for exploratory analysis.
+SESSION_COLORS = {"RTH": "#2ca02c", "ETH": "#1f77b4"}
+
+
+def _shade_session_blocks(ax, series: pd.DataFrame) -> None:
+    """Overlay lightly shaded regions for ETH and RTH stretches."""
+    legend_labels = set()
+    session_switch = series["session"].ne(series["session"].shift()).cumsum()
+    for _, block in series.groupby(session_switch):
+        session_name = block["session"].iloc[0]
+        color = SESSION_COLORS.get(session_name, "gray")
+        ax.axvspan(
+            block["timestamp"].iloc[0],
+            block["timestamp"].iloc[-1],
+            color=color,
+            alpha=0.08,
+            label=session_name if session_name not in legend_labels else None,
+        )
+        legend_labels.add(session_name)
+
+
+def _shade_weekends(ax, series: pd.DataFrame) -> None:
+    """Shade weekend periods to highlight market closures."""
+    dates = series["timestamp"].dt.normalize().drop_duplicates().sort_values()
+    weekend_label_added = False
+    for day in dates:
+        if day.dayofweek >= 5:
+            ax.axvspan(
+                day,
+                day + pd.Timedelta(days=1),
+                color="gray",
+                alpha=0.12,
+                label="Weekend" if not weekend_label_added else None,
+            )
+            weekend_label_added = True
+
+
+def plot_timeseries(
+    data: pd.DataFrame,
+    column: str,
+    label: str,
+    session: str | None = None,
+    line_color: str = "black",
+) -> None:
+    """Display a single time series with ETH/RTH overlays and weekend cues."""
+    subset = data.copy()
+    if session is not None:
+        subset = subset[subset["session"] == session]
+    subset = subset.dropna(subset=[column])
+    if subset.empty:
+        raise ValueError("No data available for plotting.")
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(
+        subset["timestamp"],
+        subset[column],
+        color=line_color,
+        linewidth=1.5,
+        label=label,
+    )
+
+    _shade_session_blocks(ax, subset)
+    _shade_weekends(ax, subset)
+
+    ax.set_ylabel(label)
+    ax.set_xlabel("Timestamp")
+    ax.set_title(f"{label} Over Time" + (f" - {session}" if session else ""))
+    ax.grid(True, linestyle="--", alpha=0.3)
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, labels, loc="best")
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+
+# %% [markdown]
 # ## Load Assets Across Sessions
 
 # %%
@@ -113,6 +193,14 @@ assets_df.head()
 
 # %%
 assets_df.dtypes
+
+# %%
+# Visualize SPX over time.
+plot_timeseries(assets_df, column="SPX", label="SPX")
+
+# %%
+# Visualize VIX over time.
+plot_timeseries(assets_df, column="VIX", label="VIX")
 
 # %% [markdown]
 # ## Load Call Option Quotes
