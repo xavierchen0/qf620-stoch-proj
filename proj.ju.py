@@ -139,13 +139,17 @@ def _shade_session_blocks(ax, series: pd.DataFrame) -> None:
 
 def _shade_weekends(ax, series: pd.DataFrame) -> None:
     """Shade weekend periods to highlight market closures."""
-    dates = series["timestamp"].dt.normalize().drop_duplicates().sort_values()
+    if series.empty:
+        return
+    start = series["timestamp"].min().normalize()
+    end = series["timestamp"].max().normalize()
+    dates = pd.date_range(start, end, freq="D")
     weekend_label_added = False
     for day in dates:
-        if day.dayofweek >= 5:
+        if day.dayofweek == 5:  # Saturday marks the start of the weekend
             ax.axvspan(
                 day,
-                day + pd.Timedelta(days=1),
+                day + pd.Timedelta(days=2),
                 color="gray",
                 alpha=0.12,
                 label="Weekend" if not weekend_label_added else None,
@@ -164,9 +168,6 @@ def plot_timeseries(
     subset = data.copy()
     if session is not None:
         subset = subset[subset["session"] == session]
-    subset = subset.dropna(subset=[column])
-    if subset.empty:
-        raise ValueError("No data available for plotting.")
 
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.plot(
