@@ -5,12 +5,19 @@
 
 # %% [markdown]
 # ## Dataset Overview
-# - **RTH vs ETH**: RTH covers the standard 09:30–16:00 ET NYSE session, while ETH captures the
-#   electronic session surrounding the close and open; both are needed to understand intraday shocks.
-# - **SPX**: The S&P 500 index level observed from cash equities.
-# - **VIX**: CBOE Volatility Index, capturing market-implied 30-day variance.
-# - **ES futures**: Front-month E-mini S&P 500 futures with bid/ask quotes that proxy overnight SPX moves.
-# - **SPX options**: Listed SPX index options with call/put strikes across expiries, quoted with bid/ask prices.
+# - **RTH vs ETH**: RTH covers the standard 09:30–16:00 ET NYSE session while ETH captures overnight and
+#   pre/post-market activity. Comparing both windows is vital because volatility shocks can start or fade outside
+#   cash hours, yet still influence pricing when the market reopens.
+# - **SPX**: The S&P 500 index represents the underlying spot level for every SPX option we analyze; tracking it
+#   alongside option quotes lets us compute moneyness, spot returns, and link surface shifts to index swings.
+# - **VIX**: The CBOE Volatility Index summarizes the 30-day implied variance from listed options, so monitoring
+#   it provides a benchmark for whether our bespoke volatility surfaces are consistent with market sentiment.
+# - **ES futures**: Front-month E-mini S&P 500 futures trade nearly 24 hours, offering a tradable proxy for SPX
+#   during ETH. Their bid/ask levels reveal how much of a move occurs before the cash market opens and aid in
+#   aligning option timestamps with corresponding underlying prices.
+# - **SPX options**: These listed index options across strikes/expiries supply the bid/ask quotes feeding our
+#   implied-volatility surface, risk-neutral PDF extraction, and hedging analysis; clean quotes are essential for
+#   reliable Greeks and surface diagnostics.
 
 # %% [markdown]
 # ## Imports and Paths
