@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+.ipynb_checkpoints/
+
+ETH/
+RTH/
+
+.DS_Store
+
+Project (2025-26 T1).pdf
+
+ETH.zip
+
+RTH.zip
+
