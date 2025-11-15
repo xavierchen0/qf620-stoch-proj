@@ -26,7 +26,10 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+from scipy.optimize import brentq
+from scipy.stats import norm
 
 pd.options.display.width = 140
 pd.options.display.max_columns = 20
@@ -110,6 +113,65 @@ def load_assets() -> pd.DataFrame:
     )
     assets = assets.sort_values("timestamp").reset_index(drop=True)
     return assets
+
+
+# %% [markdown]
+# ## Black-Scholes Utilities
+
+
+# %%
+# Provide exactly two helpers: one for pricing and one for implied volatility (calls or puts).
+def black_scholes_price(
+    option_type: str,
+    spot: float,
+    strike: float,
+    rate: float,
+    volatility: float,
+    time_to_maturity: float,
+) -> float | None:
+    """Return the Black-Scholes price for a call or put."""
+    option_type = option_type.lower()
+
+    sqrt_t = np.sqrt(time_to_maturity)
+    d1 = (np.log(spot / strike) + (rate + 0.5 * volatility**2) * time_to_maturity) / (
+        volatility * sqrt_t
+    )
+    d2 = d1 - volatility * sqrt_t
+
+    if option_type == "call":
+        return spot * norm.cdf(d1) - strike * np.exp(
+            -rate * time_to_maturity
+        ) * norm.cdf(d2)
+    if option_type == "put":
+        return strike * np.exp(-rate * time_to_maturity) * norm.cdf(
+            -d2
+        ) - spot * norm.cdf(-d1)
+
+
+def implied_volatility(
+    option_type: str,
+    spot: float,
+    strike: float,
+    rate: float,
+    market_price: float,
+    time_to_maturity: float,
+    vol_lower: float = 1e-6,
+    vol_upper: float = 5.0,
+    tol: float = 1e-6,
+    max_iter: int = 100,
+) -> float:
+    """Solve for implied volatility using Brent's method."""
+
+    def objective(vol: float) -> float:
+        return (
+            black_scholes_price(option_type, spot, strike, rate, vol, time_to_maturity)
+            - market_price
+        )
+
+    try:
+        return brentq(objective, vol_lower, vol_upper)
+    except ValueError:
+        return np.nan
 
 
 # %% [markdown]
