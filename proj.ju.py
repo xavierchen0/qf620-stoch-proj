@@ -185,7 +185,7 @@ def plot_timeseries(
     ax.set_xlabel("Timestamp")
     ax.set_title(f"{label} Over Time" + (f" - {session}" if session else ""))
     ax.grid(True, linestyle="--", alpha=0.3)
-    event_date = pd.Timestamp("2025-04-02")
+    event_date = pd.Timestamp("2025-04-02 16:00:00")
     ax.axvline(
         event_date,
         color="red",
