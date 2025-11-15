@@ -76,6 +76,11 @@ def load_option_book(option_type: str) -> pd.DataFrame:
             merged["expiry"] = expiry
             merged["session"] = session
             merged["mid"] = merged[["bid", "ask"]].mean(axis=1)
+            merged["time_to_maturity_days"] = (
+                ((merged["expiry"] - merged["timestamp"]).dt.total_seconds() / 86400)
+                .round()
+                .astype("Int64")
+            )
 
             records.append(merged)
 
