@@ -184,6 +184,14 @@ def plot_timeseries(
     ax.set_xlabel("Timestamp")
     ax.set_title(f"{label} Over Time" + (f" - {session}" if session else ""))
     ax.grid(True, linestyle="--", alpha=0.3)
+    event_date = pd.Timestamp("2025-04-02")
+    ax.axvline(
+        event_date,
+        color="red",
+        linestyle=":",
+        linewidth=2,
+        label="Liberation Day Tariffs (2 Apr 2025)",
+    )
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles, labels, loc="best")
     fig.autofmt_xdate()
