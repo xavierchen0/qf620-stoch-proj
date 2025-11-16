@@ -37,9 +37,10 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def _():
     from pathlib import Path
 
+    import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
@@ -50,7 +51,7 @@ def _(mo):
 
     PROJECT_ROOT = Path(".")
     SESSION_FOLDERS = {"ETH": PROJECT_ROOT / "ETH", "RTH": PROJECT_ROOT / "RTH"}
-    return Path, SESSION_FOLDERS, np, pd, plt, pyv_iv
+    return Path, SESSION_FOLDERS, mo, np, pd, plt, pyv_iv
 
 
 @app.cell(hide_code=True)
@@ -154,16 +155,6 @@ def _(Path, SESSION_FOLDERS, np, pd):
             allow_exact_matches=True,
         )
 
-        # Compute intrinsic value and remove quotes that violate arbitrage bounds.
-        intrinsic = np.where(
-            long_df["option_type"] == "call",
-            np.maximum(long_df["SPX"] - long_df["strike"], 0.0),
-            np.maximum(long_df["strike"] - long_df["SPX"], 0.0),
-        )
-        long_df["intrinsic_value"] = intrinsic
-        long_df = long_df.dropna(subset=["option_price", "intrinsic_value"])
-        long_df = long_df[long_df["option_price"] >= long_df["intrinsic_value"]].copy()
-
         # Mark the strike(s) closest to the forward price as ATM per timestamp/expiry/session.
         long_df["is_atm"] = False
         atm_mask = (
@@ -181,6 +172,29 @@ def _(Path, SESSION_FOLDERS, np, pd):
                 "distance"
             ].transform("min")
             long_df.loc[subset.index, "is_atm"] = subset["distance"].eq(min_distance)
+
+        # Flag out-of-the-money contracts relative to the forward.
+        long_df["is_otm"] = (
+            (long_df["option_type"] == "call")
+            & (long_df["strike"] > long_df["forward_price"])
+        ) | (
+            (long_df["option_type"] == "put")
+            & (long_df["strike"] < long_df["forward_price"])
+        )
+
+        # Compute intrinsic value and remove quotes that violate arbitrage bounds.
+        intrinsic = np.where(
+            long_df["option_type"] == "call",
+            np.maximum(long_df["SPX"] - long_df["strike"], 0.0),
+            np.maximum(long_df["strike"] - long_df["SPX"], 0.0),
+        )
+        long_df["intrinsic_value"] = intrinsic
+        long_df = long_df.dropna(subset=["option_price", "intrinsic_value"])
+
+        # Enforce strictly positive time value to avoid numerical issues with IV solvers.
+        time_value = long_df["option_price"] - long_df["intrinsic_value"]
+        time_value_tol = 1e-6
+        long_df = long_df[time_value > time_value_tol].copy()
 
         return long_df
 
@@ -365,20 +379,12 @@ def _(mo):
 
 
 @app.cell
-def _(options_df, pd, pyv_iv):
+def _(np, options_df, pd, pyv_iv):
     # Use the forward price from load_option_book to identify ATM/OTM quotes and compute IVs.
     valid_quotes = options_df.dropna(
-        subset=["forward_price", "mid", "strike", "time_to_maturity_years"]
+        subset=["forward_price", "option_price", "strike", "time_to_maturity_years"]
     )
     valid_quotes = valid_quotes[valid_quotes["time_to_maturity_years"] > 0].copy()
-
-    valid_quotes["is_otm"] = (
-        (valid_quotes["option_type"] == "call")
-        & (valid_quotes["strike"] > valid_quotes["forward_price"])
-    ) | (
-        (valid_quotes["option_type"] == "put")
-        & (valid_quotes["strike"] < valid_quotes["forward_price"])
-    )
 
     atm_otm_options = valid_quotes[
         valid_quotes["is_atm"] | valid_quotes["is_otm"]
@@ -387,7 +393,7 @@ def _(options_df, pd, pyv_iv):
     def _compute_implied_vol(row: pd.Series) -> float:
         flag = "c" if row["option_type"] == "call" else "p"
         return pyv_iv.implied_volatility(
-            row["mid"],
+            row["option_price"],
             row["SPX"],
             row["strike"],
             row["time_to_maturity_years"],
@@ -397,12 +403,7 @@ def _(options_df, pd, pyv_iv):
 
     atm_otm_options["implied_vol"] = atm_otm_options.apply(_compute_implied_vol, axis=1)
     atm_otm_options.head()
-    return
-
-
-@app.cell()
-def _(atm_otm_options):
-    len(atm_otm_options[atm_otm_options.isna().any(axis=1)])
+    return (atm_otm_options,)
 
 
 if __name__ == "__main__":
