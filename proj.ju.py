@@ -117,6 +117,7 @@ def load_assets() -> pd.DataFrame:
 
 # %% [markdown]
 # ## Black-Scholes Utilities
+# Not very efficient
 
 
 # %%
