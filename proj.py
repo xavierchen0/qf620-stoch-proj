@@ -44,14 +44,26 @@ def _():
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import py_vollib.black_scholes.implied_volatility as pyv_iv
+    import py_vollib.black.implied_volatility as pyv_iv
+    from py_vollib.helpers import forward_price as pv_forward_price
 
     pd.options.display.width = 140
     pd.options.display.max_columns = 20
 
     PROJECT_ROOT = Path(".")
     SESSION_FOLDERS = {"ETH": PROJECT_ROOT / "ETH", "RTH": PROJECT_ROOT / "RTH"}
-    return Path, SESSION_FOLDERS, mo, np, pd, plt, pyv_iv
+    RISK_FREE_RATE = 0.02
+    return (
+        Path,
+        RISK_FREE_RATE,
+        SESSION_FOLDERS,
+        mo,
+        np,
+        pd,
+        plt,
+        pv_forward_price,
+        pyv_iv,
+    )
 
 
 @app.cell(hide_code=True)
@@ -63,7 +75,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(Path, SESSION_FOLDERS, np, pd):
+def _(Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd, pv_forward_price):
     # Helper routines: parsing CSVs, melting option quotes, and orchestrating session-level loads.
     def parse_timestamped_csv(csv_path: Path) -> pd.DataFrame:
         """Load a CSV whose first column stores timestamps and return a tidy timestamp column."""
@@ -182,14 +194,20 @@ def _(Path, SESSION_FOLDERS, np, pd):
             & (long_df["strike"] < long_df["forward_price"])
         )
 
-        # Compute intrinsic value and remove quotes that violate arbitrage bounds.
-        intrinsic = np.where(
-            long_df["option_type"] == "call",
-            np.maximum(long_df["SPX"] - long_df["strike"], 0.0),
-            np.maximum(long_df["strike"] - long_df["SPX"], 0.0),
+        # Compute py_vollib-consistent intrinsic values using discounted forward payoffs.
+        long_df = long_df.dropna(
+            subset=["option_price", "SPX", "strike", "time_to_maturity_years"]
         )
-        long_df["intrinsic_value"] = intrinsic
-        long_df = long_df.dropna(subset=["option_price", "intrinsic_value"])
+        bs_forward = pv_forward_price(
+            long_df["SPX"], long_df["time_to_maturity_years"], RISK_FREE_RATE
+        )
+        undiscounted_intrinsic = np.where(
+            long_df["option_type"] == "call",
+            np.maximum(bs_forward - long_df["strike"], 0.0),
+            np.maximum(long_df["strike"] - bs_forward, 0.0),
+        )
+        discount_factor = np.exp(-RISK_FREE_RATE * long_df["time_to_maturity_years"])
+        long_df["intrinsic_value"] = undiscounted_intrinsic * discount_factor
 
         # Enforce strictly positive time value to avoid numerical issues with IV solvers.
         time_value = long_df["option_price"] - long_df["intrinsic_value"]
@@ -232,7 +250,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(pd, plt):
+def _(np, pd, plt):
     # Provide reusable plotting helpers for exploratory analysis.
     SESSION_COLORS = {"RTH": "#2ca02c", "ETH": "#1f77b4"}
 
@@ -312,7 +330,93 @@ def _(pd, plt):
         fig.autofmt_xdate()
         plt.tight_layout()
 
-    return (plot_timeseries,)
+    def plot_vol_smiles_by_period(
+        options: pd.DataFrame,
+        period: str,
+        *,
+        event_day: pd.Timestamp = pd.Timestamp("2025-04-02 16:00:00"),
+        maturity_col: str = "time_to_maturity_days",
+        forward_col: str = "forward_price",
+        strike_col: str = "strike",
+        iv_col: str = "implied_vol",
+        min_quotes: int = 5,
+    ) -> None:
+        """Plot volatility smiles (IV vs log-moneyness) for each maturity bucket within a given event period."""
+        if options.empty:
+            raise ValueError("No option data provided for plotting.")
+
+        timestamps = options["timestamp"]
+
+        # 1) Select the event window: before / during / after.
+        event_ts = event_day
+        # End of the event day = midnight of the *next* day
+        event_day_end = event_ts.normalize() + pd.Timedelta(days=1)
+
+        period_lower = period.lower()
+        if period_lower == "before":
+            mask = timestamps < event_ts
+            title_fragment = "Before Liberation Day"
+        elif period_lower == "during":
+            mask = (timestamps >= event_ts) & (timestamps < event_day_end)
+            title_fragment = "During Liberation Day"
+        elif period_lower == "after":
+            mask = timestamps >= event_day_end
+            title_fragment = "After Liberation Day"
+        else:
+            raise ValueError("period must be one of {'before', 'during', 'after'}")
+
+        # 2) Filter to the chosen period and drop unusable rows.
+        subset = (
+            options.loc[mask]
+            .dropna(subset=[forward_col, strike_col, iv_col, maturity_col])
+            .copy()
+        )
+        if subset.empty:
+            raise ValueError(f"No quotes available for period '{period}'.")
+
+        # Require positive forward and strike for log(K/F).
+        subset = subset[(subset[forward_col] > 0) & (subset[strike_col] > 0)].copy()
+        if subset.empty:
+            raise ValueError(
+                f"No valid quotes with positive {forward_col} and {strike_col} for period '{period}'."
+            )
+
+        # 3) Compute log-moneyness: k = ln(K / F).
+        subset["log_moneyness"] = np.log(subset[strike_col] / subset[forward_col])
+
+        # 4) Bucket by maturity (days).
+        subset[maturity_col] = subset[maturity_col].astype(int)
+        ordered_maturities = sorted(subset[maturity_col].unique())
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        colors = plt.cm.viridis(np.linspace(0, 1, len(ordered_maturities)))
+
+        # 5) Plot IV vs log-moneyness for each maturity.
+        plotted_any = False
+        for color, maturity in zip(colors, ordered_maturities):
+            maturity_slice = subset[subset[maturity_col] == maturity]
+            maturity_slice = maturity_slice.sort_values("log_moneyness")
+            if len(maturity_slice) < min_quotes:
+                continue
+
+            ax.plot(
+                maturity_slice["log_moneyness"],
+                maturity_slice[iv_col],
+                label=f"{maturity}d",
+                color=color,
+                linewidth=1.5,
+            )
+            plotted_any = True
+
+        if not plotted_any:
+            raise ValueError(f"Not enough quotes to plot smiles for period '{period}'.")
+
+        ax.set_title(f"Volatility Smiles {title_fragment}")
+        ax.set_xlabel("Log-moneyness  ln(K / F)")
+        ax.set_ylabel("Implied Volatility")
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend(title="TTM (days)", loc="best")
+        plt.tight_layout()
 
 
 @app.cell(hide_code=True)
@@ -379,7 +483,7 @@ def _(mo):
 
 
 @app.cell
-def _(np, options_df, pd, pyv_iv):
+def _(RISK_FREE_RATE, options_df, pd, pyv_iv):
     # Use the forward price from load_option_book to identify ATM/OTM quotes and compute IVs.
     valid_quotes = options_df.dropna(
         subset=["forward_price", "option_price", "strike", "time_to_maturity_years"]
@@ -394,16 +498,32 @@ def _(np, options_df, pd, pyv_iv):
         flag = "c" if row["option_type"] == "call" else "p"
         return pyv_iv.implied_volatility(
             row["option_price"],
-            row["SPX"],
+            row["forward_price"],
             row["strike"],
             row["time_to_maturity_years"],
-            0.0,
+            RISK_FREE_RATE,
             flag,
         )
 
     atm_otm_options["implied_vol"] = atm_otm_options.apply(_compute_implied_vol, axis=1)
     atm_otm_options.head()
     return (atm_otm_options,)
+
+
+@app.cell
+def _(atm_otm_options, plot_vol_smiles_by_period, plt):
+    # Plot 15-day volatility smiles for the three event windows.
+    subset = atm_otm_options.dropna(
+        subset=["time_to_maturity_days", "implied_vol", "strike", "timestamp"]
+    ).copy()
+    subset["time_to_maturity_days"] = (
+        subset["time_to_maturity_days"].round().astype(int)
+    )
+
+    for period in ("before", "during", "after"):
+        plot_vol_smiles_by_period(subset, period, min_quotes=3)
+        plt.show()
+    return
 
 
 if __name__ == "__main__":

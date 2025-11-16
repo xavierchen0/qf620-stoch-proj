@@ -156,6 +156,13 @@ def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
         ].transform("min")
         long_df.loc[subset.index, "is_atm"] = subset["distance"].eq(min_distance)
 
+    # Flag out-of-the-money contracts relative to the forward proxy.
+    long_df["is_otm"] = np.where(
+        long_df["option_type"] == "call",
+        long_df["strike"] > long_df["forward_price"],
+        long_df["strike"] < long_df["forward_price"],
+    )
+
     return long_df
 
 
@@ -307,14 +314,6 @@ valid_quotes = options_df.dropna(
     subset=["forward_price", "mid", "strike", "time_to_maturity_years"]
 )
 valid_quotes = valid_quotes[valid_quotes["time_to_maturity_years"] > 0].copy()
-
-valid_quotes["is_otm"] = (
-    (valid_quotes["option_type"] == "call")
-    & (valid_quotes["strike"] > valid_quotes["forward_price"])
-) | (
-    (valid_quotes["option_type"] == "put")
-    & (valid_quotes["strike"] < valid_quotes["forward_price"])
-)
 
 atm_otm_options = valid_quotes[valid_quotes["is_atm"] | valid_quotes["is_otm"]].copy()
 
