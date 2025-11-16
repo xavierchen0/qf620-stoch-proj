@@ -19,8 +19,12 @@ dependencies = [
     "py-lets-be-rational",
     "py-vollib",
     "scipy>=1.16.2",
+    "watchdog>=6.0.0",
 ]
 
 [tool.uv.sources]
 py-lets-be-rational = { git = "https://github.com/vollib/py_lets_be_rational.git" }
 py-vollib = { git = "https://github.com/vollib/py_vollib.git" }
+
+[tool.marimo.runtime]
+watcher_on_save = "autorun"
