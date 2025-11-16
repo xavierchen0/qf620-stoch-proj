@@ -9,6 +9,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "jupytext>=1.17.3",
     "llvmlite>=0.45.1",
+    "marimo>=0.17.8",
     "matplotlib>=3.10.7",
     "nbclassic>=1.3.3",
     "notebook>=7.4.7",
