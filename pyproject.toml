@@ -8,10 +8,18 @@ dependencies = [
     "jupynium>=0.2.7",
     "jupyter>=1.1.1",
     "jupytext>=1.17.3",
+    "llvmlite>=0.45.1",
     "matplotlib>=3.10.7",
     "nbclassic>=1.3.3",
     "notebook>=7.4.7",
+    "numba>=0.62.1",
     "numpy>=2.3.3",
     "pandas>=2.3.3",
+    "py-lets-be-rational",
+    "py-vollib",
     "scipy>=1.16.2",
 ]
+
+[tool.uv.sources]
+py-lets-be-rational = { git = "https://github.com/vollib/py_lets_be_rational.git" }
+py-vollib = { git = "https://github.com/vollib/py_vollib.git" }
