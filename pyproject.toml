@@ -12,6 +12,7 @@ dependencies = [
     "marimo>=0.17.8",
     "matplotlib>=3.10.7",
     "nbclassic>=1.3.3",
+    "nbformat>=5.10.4",
     "notebook>=7.4.7",
     "numba>=0.62.1",
     "numpy>=2.3.3",
