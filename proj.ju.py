@@ -73,12 +73,18 @@ def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
                 expiry = pd.to_datetime(stem_parts[-1])
                 bid_path = ask_path.with_name(ask_path.name.replace("_ask_", "_bid_"))
 
+                # Convert the wide strike grid into tidy bid/ask quote tables.
                 ask_frame = melt_option_quotes(parse_timestamped_csv(ask_path), "ask")
                 bid_frame = melt_option_quotes(parse_timestamped_csv(bid_path), "bid")
                 merged = pd.merge(
                     ask_frame, bid_frame, on=["timestamp", "strike"], how="outer"
                 )
 
+                # Replace placeholder -1 quotes with NaN and remove empty markets.
+                merged[["bid", "ask"]] = merged[["bid", "ask"]].replace(-1, np.nan)
+                merged = merged.dropna(subset=["bid", "ask"])
+
+                # Attach contract metadata and maturity measures.
                 merged["expiry"] = expiry
                 merged["session"] = session
                 merged["option_type"] = option_type
@@ -90,19 +96,66 @@ def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
                     "Int64"
                 )
                 merged["time_to_maturity_years"] = time_delta_days / 365.25
+
+                # Use the midpoint as the transactable option value.
                 merged["mid"] = merged[["bid", "ask"]].mean(axis=1)
 
                 records.append(merged)
 
+    # Combine all sessions/files into one chronologically ordered long DataFrame.
     long_df = pd.concat(records, ignore_index=True)
-    long_df = long_df.sort_values(["timestamp", "strike", "option_type"]).reset_index(
-        drop=True
-    )
 
-    spx_lookup = assets[["timestamp", "session", "SPX"]].copy()
-    spx_lookup["session"] = spx_lookup["session"].astype(str)
-    long_df["session"] = long_df["session"].astype(str)
-    long_df = long_df.merge(spx_lookup, on=["timestamp", "session"], how="left")
+    # Prepare the SPX snapshot and forward proxy to align with option quotes.
+    asset_slice = assets[["timestamp", "session", "SPX", "ES_BID", "ES_ASK"]].copy()
+    asset_slice["forward_price"] = asset_slice[["ES_BID", "ES_ASK"]].mean(axis=1)
+    asset_slice = asset_slice.drop(columns=["ES_BID", "ES_ASK"])
+
+    # Merge the nearest prior asset snapshot within each session onto every option row.
+    long_df["session"] = long_df["session"].astype("category")
+    asset_slice["session"] = asset_slice["session"].astype("category")
+
+    # Sort cols before we can use merge_asof
+    long_df = long_df.sort_values("timestamp").reset_index(drop=True)
+    asset_slice = asset_slice.sort_values("timestamp").reset_index(drop=True)
+
+    long_df = pd.merge_asof(
+        long_df,
+        asset_slice,
+        on="timestamp",
+        by="session",
+        direction="backward",
+        allow_exact_matches=True,
+    )
+    long_df["session"] = long_df["session"].astype("category")
+
+    # Compute intrinsic value and remove quotes that violate arbitrage bounds.
+    intrinsic = np.where(
+        long_df["option_type"] == "call",
+        np.maximum(long_df["SPX"] - long_df["strike"], 0.0),
+        np.maximum(long_df["strike"] - long_df["SPX"], 0.0),
+    )
+    long_df["intrinsic_value"] = intrinsic
+    long_df = long_df.dropna(subset=["mid", "intrinsic_value"])
+    long_df = long_df[long_df["mid"] >= long_df["intrinsic_value"]].copy()
+
+    # Mark the strike(s) closest to the forward price as ATM per timestamp/expiry/session.
+    long_df["is_atm"] = False
+    atm_mask = (
+        long_df["forward_price"].notna()
+        & long_df["strike"].notna()
+        & long_df["timestamp"].notna()
+        & long_df["expiry"].notna()
+    )
+    if atm_mask.any():
+        subset = long_df.loc[
+            atm_mask, ["timestamp", "expiry", "session", "strike", "forward_price"]
+        ].copy()
+        subset["distance"] = (subset["strike"] - subset["forward_price"]).abs()
+        min_distance = subset.groupby(["timestamp", "expiry", "session"])[
+            "distance"
+        ].transform("min")
+        long_df.loc[subset.index, "is_atm"] = subset["distance"].eq(min_distance)
+
     return long_df
 
 
@@ -243,3 +296,40 @@ plot_timeseries(assets_df, column="VIX", label="VIX")
 # Build the consolidated option dataframe with bid/ask/mid quotes.
 options_df = load_option_book(assets_df)
 options_df.head()
+
+# %% [markdown]
+# ## Filter ATM/OTM Options via Forward and Compute IV
+
+
+# %%
+# Use the forward price from load_option_book to identify ATM/OTM quotes and compute IVs.
+valid_quotes = options_df.dropna(
+    subset=["forward_price", "mid", "strike", "time_to_maturity_years"]
+)
+valid_quotes = valid_quotes[valid_quotes["time_to_maturity_years"] > 0].copy()
+
+valid_quotes["is_otm"] = (
+    (valid_quotes["option_type"] == "call")
+    & (valid_quotes["strike"] > valid_quotes["forward_price"])
+) | (
+    (valid_quotes["option_type"] == "put")
+    & (valid_quotes["strike"] < valid_quotes["forward_price"])
+)
+
+atm_otm_options = valid_quotes[valid_quotes["is_atm"] | valid_quotes["is_otm"]].copy()
+
+
+def _compute_implied_vol(row: pd.Series) -> float:
+    flag = "c" if row["option_type"] == "call" else "p"
+    return pyv_iv.implied_volatility(
+        row["mid"],
+        row["SPX"],
+        row["strike"],
+        row["time_to_maturity_years"],
+        0.0,
+        flag,
+    )
+
+
+atm_otm_options["implied_vol"] = atm_otm_options.apply(_compute_implied_vol, axis=1)
+atm_otm_options.head()
