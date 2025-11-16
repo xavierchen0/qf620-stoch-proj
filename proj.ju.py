@@ -28,6 +28,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import py_vollib.black_scholes as pyv_black_scholes
+import py_vollib.black_scholes.implied_volatility as pyv_iv
 
 pd.options.display.width = 140
 pd.options.display.max_columns = 20
@@ -57,36 +59,50 @@ def melt_option_quotes(frame: pd.DataFrame, value_name: str) -> pd.DataFrame:
     return melted
 
 
-def load_option_book(option_type: str) -> pd.DataFrame:
-    """Load and merge bid/ask quotes for the requested option type across sessions."""
+def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Load and merge bid/ask quotes for calls and puts across sessions."""
+    if assets is None:
+        assets = load_assets()
+
     records: list[pd.DataFrame] = []
-    for session, folder in SESSION_FOLDERS.items():
-        ask_files = sorted(folder.glob(f"*_{option_type}_ask_*.csv"))
-        for ask_path in ask_files:
-            stem_parts = ask_path.stem.split("_")
-            quote_date = pd.to_datetime(stem_parts[0])
-            expiry = pd.to_datetime(stem_parts[-1])
-            bid_path = ask_path.with_name(ask_path.name.replace("_ask_", "_bid_"))
+    for option_type in ("call", "put"):
+        for session, folder in SESSION_FOLDERS.items():
+            ask_files = sorted(folder.glob(f"*_{option_type}_ask_*.csv"))
+            for ask_path in ask_files:
+                stem_parts = ask_path.stem.split("_")
+                expiry = pd.to_datetime(stem_parts[-1])
+                bid_path = ask_path.with_name(ask_path.name.replace("_ask_", "_bid_"))
 
-            ask_frame = melt_option_quotes(parse_timestamped_csv(ask_path), "ask")
-            bid_frame = melt_option_quotes(parse_timestamped_csv(bid_path), "bid")
-            merged = pd.merge(
-                ask_frame, bid_frame, on=["timestamp", "strike"], how="outer"
-            )
+                ask_frame = melt_option_quotes(parse_timestamped_csv(ask_path), "ask")
+                bid_frame = melt_option_quotes(parse_timestamped_csv(bid_path), "bid")
+                merged = pd.merge(
+                    ask_frame, bid_frame, on=["timestamp", "strike"], how="outer"
+                )
 
-            merged["expiry"] = expiry
-            merged["session"] = session
-            merged["mid"] = merged[["bid", "ask"]].mean(axis=1)
-            merged["time_to_maturity_days"] = (
-                ((merged["expiry"] - merged["timestamp"]).dt.total_seconds() / 86400)
-                .round()
-                .astype("Int64")
-            )
+                merged["expiry"] = expiry
+                merged["session"] = session
+                merged["option_type"] = option_type
 
-            records.append(merged)
+                time_delta_days = (
+                    merged["expiry"] - merged["timestamp"]
+                ).dt.total_seconds() / 86400
+                merged["time_to_maturity_days"] = time_delta_days.round().astype(
+                    "Int64"
+                )
+                merged["time_to_maturity_years"] = time_delta_days / 365.25
+                merged["mid"] = merged[["bid", "ask"]].mean(axis=1)
+
+                records.append(merged)
 
     long_df = pd.concat(records, ignore_index=True)
-    long_df = long_df.sort_values(["timestamp", "strike"]).reset_index(drop=True)
+    long_df = long_df.sort_values(["timestamp", "strike", "option_type"]).reset_index(
+        drop=True
+    )
+
+    spx_lookup = assets[["timestamp", "session", "SPX"]].copy()
+    spx_lookup["session"] = spx_lookup["session"].astype(str)
+    long_df["session"] = long_df["session"].astype(str)
+    long_df = long_df.merge(spx_lookup, on=["timestamp", "session"], how="left")
     return long_df
 
 
@@ -221,17 +237,9 @@ plot_timeseries(assets_df, column="SPX", label="SPX")
 plot_timeseries(assets_df, column="VIX", label="VIX")
 
 # %% [markdown]
-# ## Load Call Option Quotes
+# ## Load Option Quotes
 
 # %%
-# Build the consolidated call option dataframe with bid/ask/mid quotes.
-call_options_df = load_option_book("call")
-call_options_df.head()
-
-# %% [markdown]
-# ## Load Put Option Quotes
-
-# %%
-# Build the consolidated put option dataframe with bid/ask/mid quotes.
-put_options_df = load_option_book("put")
-put_options_df.head()
+# Build the consolidated option dataframe with bid/ask/mid quotes.
+options_df = load_option_book(assets_df)
+options_df.head()
