@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import py_vollib.black.implied_volatility as pyv_iv
 from py_vollib.helpers import forward_price as pv_forward_price
+from scipy.optimize import least_squares
 
 pd.options.display.width = 140
 pd.options.display.max_columns = 20
@@ -14,6 +15,7 @@ pd.options.display.max_columns = 20
 PROJECT_ROOT = Path(".")
 SESSION_FOLDERS = {"ETH": PROJECT_ROOT / "ETH", "RTH": PROJECT_ROOT / "RTH"}
 RISK_FREE_RATE = 0.02
+BETA = 0.7
 
 # %% [markdown]
 """
@@ -46,7 +48,6 @@ assets and option dataframes ready for downstream analysis.
 ## Helper Functions
 """
 
-
 # %%
 # Helper routines: parsing CSVs, melting option quotes, and orchestrating session-level loads.
 def parse_timestamped_csv(csv_path: Path) -> pd.DataFrame:
@@ -56,17 +57,17 @@ def parse_timestamped_csv(csv_path: Path) -> pd.DataFrame:
     frame = frame.reset_index().rename(columns={"index": "timestamp"})
     return frame
 
-
 def melt_option_quotes(frame: pd.DataFrame, value_name: str) -> pd.DataFrame:
     """Convert wide strike columns into long format for a single quote side."""
-    melted = frame.melt(id_vars="timestamp", var_name="strike", value_name=value_name)
+    melted = frame.melt(
+        id_vars="timestamp", var_name="strike", value_name=value_name
+    )
     melted["strike"] = pd.to_numeric(melted["strike"], errors="coerce")
     melted[value_name] = pd.to_numeric(melted[value_name], errors="coerce")
     return melted
 
-
 def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Load and merge bid/ask quotes for calls and puts acrjkjkjkjkjkjkjkjkjkjkjkjkoss sessions."""
+    """Load and merge bid/ask quotes for calls and puts across sessions."""
     if assets is None:
         assets = load_assets()
 
@@ -77,11 +78,17 @@ def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
             for ask_path in ask_files:
                 stem_parts = ask_path.stem.split("_")
                 expiry = pd.to_datetime(stem_parts[-1])
-                bid_path = ask_path.with_name(ask_path.name.replace("_ask_", "_bid_"))
+                bid_path = ask_path.with_name(
+                    ask_path.name.replace("_ask_", "_bid_")
+                )
 
                 # Convert the wide strike grid into tidy bid/ask quote tables.
-                ask_frame = melt_option_quotes(parse_timestamped_csv(ask_path), "ask")
-                bid_frame = melt_option_quotes(parse_timestamped_csv(bid_path), "bid")
+                ask_frame = melt_option_quotes(
+                    parse_timestamped_csv(ask_path), "ask"
+                )
+                bid_frame = melt_option_quotes(
+                    parse_timestamped_csv(bid_path), "bid"
+                )
                 merged = pd.merge(
                     ask_frame, bid_frame, on=["timestamp", "strike"], how="outer"
                 )
@@ -179,7 +186,6 @@ def load_option_book(assets: pd.DataFrame | None = None) -> pd.DataFrame:
 
     return long_df
 
-
 def load_assets() -> pd.DataFrame:
     """Load SPX/ES/VIX snapshots from both sessions."""
     frames: list[pd.DataFrame] = []
@@ -202,6 +208,37 @@ def load_assets() -> pd.DataFrame:
     assets = assets.sort_values("timestamp").reset_index(drop=True)
     return assets
 
+def SABR(F, K, T, alpha, beta, rho, nu):
+    X = K
+    # if K is at-the-money-forward
+    if abs(F - K) < 1e-12:
+        numer1 = (((1 - beta) ** 2) / 24) * alpha * alpha / (F ** (2 - 2 * beta))
+        numer2 = 0.25 * rho * beta * nu * alpha / (F ** (1 - beta))
+        numer3 = ((2 - 3 * rho * rho) / 24) * nu * nu
+        VolAtm = alpha * (1 + (numer1 + numer2 + numer3) * T) / (F ** (1 - beta))
+        sabrsigma = VolAtm
+    else:
+        z = (nu / alpha) * ((F * X) ** (0.5 * (1 - beta))) * np.log(F / X)
+        zhi = np.log((((1 - 2 * rho * z + z * z) ** 0.5) + z - rho) / (1 - rho))
+        numer1 = (((1 - beta) ** 2) / 24) * (
+            (alpha * alpha) / ((F * X) ** (1 - beta))
+        )
+        numer2 = 0.25 * rho * beta * nu * alpha / ((F * X) ** ((1 - beta) / 2))
+        numer3 = ((2 - 3 * rho * rho) / 24) * nu * nu
+        numer = alpha * (1 + (numer1 + numer2 + numer3) * T) * z
+        denom1 = ((1 - beta) ** 2 / 24) * (np.log(F / X)) ** 2
+        denom2 = (((1 - beta) ** 4) / 1920) * ((np.log(F / X)) ** 4)
+        denom = ((F * X) ** ((1 - beta) / 2)) * (1 + denom1 + denom2) * zhi
+        sabrsigma = numer / denom
+
+    return sabrsigma
+
+def sabrcalibration(x, strikes, vols, F, T, beta=BETA):
+    err = 0.0
+    for i, vol in enumerate(vols):
+        err += (vol - SABR(F, strikes[i], T, x[0], beta, x[1], x[2])) ** 2
+
+    return err
 
 # %% [markdown]
 """
@@ -213,7 +250,6 @@ from collections.abc import Mapping, Sequence
 
 # Provide reusable plotting helpers for exploratory analysis.
 SESSION_COLORS = {"RTH": "#2ca02c", "ETH": "#1f77b4"}
-
 
 def _shade_session_blocks(ax, series: pd.DataFrame) -> None:
     """Overlay lightly shaded regions for ETH and RTH stretches."""
@@ -230,7 +266,6 @@ def _shade_session_blocks(ax, series: pd.DataFrame) -> None:
             label=session_name if session_name not in legend_labels else None,
         )
         legend_labels.add(session_name)
-
 
 def _shade_weekends(ax, series: pd.DataFrame) -> None:
     """Shade weekend periods to highlight market closures."""
@@ -250,7 +285,6 @@ def _shade_weekends(ax, series: pd.DataFrame) -> None:
                 label="Weekend" if not weekend_label_added else None,
             )
             weekend_label_added = True
-
 
 def plot_timeseries(
     data: pd.DataFrame,
@@ -292,7 +326,6 @@ def plot_timeseries(
     ax.legend(handles, labels, loc="best")
     fig.autofmt_xdate()
     plt.tight_layout()
-
 
 def plot_vol_smiles_by_period(
     options: pd.DataFrame,
@@ -381,7 +414,6 @@ def plot_vol_smiles_by_period(
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.legend(title="TTM (days)", loc="best")
     plt.tight_layout()
-
 
 def plot_single_ttm_smiles(
     options: pd.DataFrame,
@@ -509,7 +541,6 @@ def plot_single_ttm_smiles(
     ax.legend(loc="best")
     plt.tight_layout()
 
-
 # %% [markdown]
 """
 # Start
@@ -556,8 +587,9 @@ valid_quotes = options_df.dropna(
 )
 valid_quotes = valid_quotes[valid_quotes["time_to_maturity_years"] > 0].copy()
 
-atm_otm_options = valid_quotes[valid_quotes["is_atm"] | valid_quotes["is_otm"]].copy()
-
+atm_otm_options = valid_quotes[
+    valid_quotes["is_atm"] | valid_quotes["is_otm"]
+].copy()
 
 def _compute_implied_vol(row: pd.Series) -> float:
     flag = "c" if row["option_type"] == "call" else "p"
@@ -569,7 +601,6 @@ def _compute_implied_vol(row: pd.Series) -> float:
         RISK_FREE_RATE,
         flag,
     )
-
 
 atm_otm_options["implied_vol"] = atm_otm_options.apply(_compute_implied_vol, axis=1)
 atm_otm_options.head()
@@ -625,3 +656,227 @@ plot_single_ttm_smiles(
     plot_title="Single-TTM Volatility Smiles - Before vs After",
 )
 plt.show()
+
+# %%
+period_configs3 = {
+    "before": 13,
+    "during": 13,
+    "after": 12,
+}
+
+def _period_mask(timestamps: pd.Series, window: str) -> pd.Series:
+    event_day = pd.Timestamp("2025-04-02 16:00:00")
+    event_end = pd.Timestamp("2025-04-03 09:30:00")
+    if window == "before":
+        return timestamps < event_day
+    if window == "during":
+        return (timestamps >= event_day) & (timestamps < event_end)
+    if window == "after":
+        return timestamps >= event_end
+    raise ValueError("period must be one of {'before', 'during', 'after'}")
+
+def _prepare_slice(period: str, target_ttm: int) -> pd.DataFrame:
+    mask = _period_mask(atm_otm_options["timestamp"], period)
+    subset = atm_otm_options.loc[mask].dropna(
+        subset=[
+            "forward_price",
+            "strike",
+            "implied_vol",
+            "time_to_maturity_days",
+            "time_to_maturity_years",
+        ]
+    )
+    subset = subset[(subset["forward_price"] > 0) & (subset["strike"] > 0)]
+    if subset.empty:
+        raise ValueError(f"No quotes available for period '{period}'.")
+
+    subset = subset[subset["time_to_maturity_days"] == target_ttm].copy()
+    if subset.shape[0] < 4:
+        raise ValueError(
+            f"Insufficient quotes to calibrate SABR for period '{period}' and target TTM {target_ttm}d."
+        )
+    subset = subset.sort_values("strike")
+    return subset
+
+calibration_rows: list[dict[str, float | str]] = []
+fitted_smiles: list[dict[str, np.ndarray | str]] = []
+
+initial_guess = np.array([0.2, 0.0, 0.4])
+for period1, cfg in period_configs3.items():
+    try:
+        subset1 = _prepare_slice(period1, cfg)
+    except ValueError as exc:
+        print(exc)
+        continue
+
+    latest_row = subset1.sort_values("timestamp").iloc[-1]
+    latest_ts = latest_row["timestamp"]
+    smile = subset1[subset1["timestamp"] == latest_ts].copy()
+    smile = smile.sort_values("strike")
+
+    if smile.shape[0] < 4:
+        raise ValueError(
+            f"Not enough quotes at timestamp {latest_ts} for '{period1}'."
+        )
+
+    F = float(smile["forward_price"].iloc[0])
+    T = float(smile["time_to_maturity_years"].iloc[0])
+    strikes = smile["strike"].to_numpy()
+    market_vols = smile["implied_vol"].to_numpy()
+
+    res = least_squares(
+        lambda x: sabrcalibration(x, strikes, market_vols, F, T, beta=BETA),
+        initial_guess,
+    )
+    alpha, rho, nu = res.x
+    model_vols = np.array([SABR(F, K, T, alpha, BETA, rho, nu) for K in strikes])
+    rmse = float(np.sqrt(np.mean((model_vols - market_vols) ** 2)))
+
+    calibration_rows.append(
+        {
+            "period": period1.title(),
+            "avg_forward": F,
+            "avg_T_years": T,
+            "alpha": alpha,
+            "beta": BETA,
+            "rho": rho,
+            "nu": nu,
+            "rmse": rmse,
+            "quotes": len(subset1),
+        }
+    )
+    fitted_smiles.append(
+        {
+            "period": period1.title(),
+            "strikes": strikes,
+            "market_vols": market_vols,
+            "model_vols": model_vols,
+        }
+    )
+
+calibration_summary = pd.DataFrame(calibration_rows)
+calibration_summary
+
+# %%
+"""
+For each period (before, during, after), take the target TTM,
+filter the full atm_otm_options panel for that period + TTM,
+and plot:
+
+  • ALL market implied vols (scatter) from atm_otm_options
+  • SABR implied vols (smooth, extrapolated curve)
+
+X-axis is log-moneyness = ln(K / F_rep),
+where F_rep is the representative forward from calibration_summary.
+"""
+
+period_configs4 = {
+    "before": 13,
+    "during": 13,
+    "after": 12,
+}
+
+def _period_mask(timestamps: pd.Series, window: str) -> pd.Series:
+    event_day = pd.Timestamp("2025-04-02 16:00:00")
+    event_end = pd.Timestamp("2025-04-03 09:30:00")
+    if window == "before":
+        return timestamps < event_day
+    if window == "during":
+        return (timestamps >= event_day) & (timestamps < event_end)
+    if window == "after":
+        return timestamps >= event_end
+    raise ValueError("period must be one of {'before', 'during', 'after'}")
+
+color_map = {
+    "before": "#4e79a7",
+    "during": "#f28e2b",
+    "after": "#e15759",
+}
+
+for period4, target_ttm in period_configs4.items():
+    # 1) Filter atm_otm_options to this period + TTM (but keep ALL timestamps)
+    mask = _period_mask(atm_otm_options["timestamp"], period4)
+    subset4 = atm_otm_options.loc[mask].dropna(
+        subset=[
+            "forward_price",
+            "strike",
+            "implied_vol",
+            "time_to_maturity_days",
+            "time_to_maturity_years",
+        ]
+    )
+    subset4 = subset4[(subset4["forward_price"] > 0) & (subset4["strike"] > 0)]
+    subset4 = subset4[subset4["time_to_maturity_days"] == target_ttm]
+
+    if subset4.empty:
+        print(f"No quotes for period '{period4}' with TTM {target_ttm}d.")
+        continue
+
+    # Use ALL quotes in this period+TTM
+    subset4 = subset4.sort_values("strike")
+    strikes_all = subset4["strike"].to_numpy()
+    market_vols_all = subset4["implied_vol"].to_numpy()
+
+    # 2) Look up the SABR parameters for this period
+    # calibration_summary stored period as .title() ("Before", "During", "After")
+    row = calibration_summary.loc[calibration_summary["period"] == period4.title()]
+    if row.empty:
+        print(f"No calibrated SABR params found for period '{period4}'.")
+        continue
+    row = row.iloc[0]
+
+    alpha1 = float(row["alpha"])
+    beta = float(row["beta"])  # or use BETA if you prefer
+    rho2 = float(row["rho"])
+    nu2 = float(row["nu"])
+    F_rep = float(row["avg_forward"])
+    T_rep = float(row["avg_T_years"])
+
+    # 3) Compute log-moneyness for ALL market points using representative forward
+    market_logm = np.log(strikes_all / F_rep)
+
+    # 4) Build a strike grid for SABR extrapolation
+    k_min, k_max = strikes_all.min(), strikes_all.max()
+    k_low = 0.8 * k_min
+    k_high = 1.2 * k_max
+    strike_grid = np.linspace(k_low, k_high, 300)
+
+    sabr_vols_grid = np.array(
+        [SABR(F_rep, K_, T_rep, alpha1, beta, rho2, nu2) for K_ in strike_grid]
+    )
+    sabr_logm = np.log(strike_grid / F_rep)
+
+    # 5) Plot: one figure per period
+    fig, ax = plt.subplots(figsize=(8, 4))
+    color = color_map.get(period4, None)
+
+    # Market vols (scatter) – all timestamps in this period+TTM
+    ax.scatter(
+        market_logm,
+        market_vols_all,
+        label=f"{period4.title()} – market (all quotes)",
+        color=color,
+        alpha=0.5,
+        s=12,
+    )
+
+    # SABR vols (smooth curve)
+    ax.plot(
+        sabr_logm,
+        sabr_vols_grid,
+        label=f"{period4.title()} – SABR (extrapolated)",
+        color=color,
+        linestyle="--",
+        linewidth=1.8,
+    )
+
+    ax.set_xlabel("Log-moneyness  ln(K / F)")
+    ax.set_ylabel("Implied Volatility")
+    ax.set_title(
+        f"Market vs SABR Implied Vol – {period4.title()} (TTM {target_ttm}d, all quotes)"
+    )
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    plt.show()
+
