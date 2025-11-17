@@ -45,7 +45,7 @@ def _():
     import numpy as np
     import pandas as pd
     import py_vollib.black.implied_volatility as pyv_iv
-    from py_vollib.helpers import forward_price as pv_forward_price
+    from py_vollib.black import black as pyv_black
     from scipy.optimize import least_squares
 
     pd.options.display.width = 140
@@ -66,6 +66,7 @@ def _():
         pd,
         plt,
         pyv_iv,
+        pyv_black,
     )
 
 
@@ -971,6 +972,218 @@ def _(atm_otm_options, calibration_summary, SABR, plt, np, pd, BETA):
         )
         ax.grid(True, linestyle="--", alpha=0.3)
         ax.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+
+    return
+
+
+@app.cell
+def _(
+    atm_otm_options,
+    calibration_summary,
+    SABR,
+    np,
+    pd,
+    plt,
+    BETA,
+    RISK_FREE_RATE,
+    pyv_black,
+):
+    """
+    Compute SABR-implied risk-neutral density for
+    before / during / after using Breeden–Litzenberger.
+
+    X-axis is log-moneyness = ln(K / F_rep).
+    All variables uniquely named to avoid Marimo global conflicts.
+
+    Produces:
+      • One plot per period (before/during/after)
+      • One combined plot overlaying all three densities
+    """
+
+    pdf_period_configs = {
+        "before": 13,
+        "during": 13,
+        "after": 12,
+    }
+
+    def pdf_period_mask(timestamps: pd.Series, window: str) -> pd.Series:
+        pdf_event_start = pd.Timestamp("2025-04-02 16:00:00")
+        pdf_event_end = pd.Timestamp("2025-04-03 09:30:00")
+        if window == "before":
+            return timestamps < pdf_event_start
+        if window == "during":
+            return (timestamps >= pdf_event_start) & (timestamps < pdf_event_end)
+        if window == "after":
+            return timestamps >= pdf_event_end
+        raise ValueError("window must be one of {'before','during','after'}")
+
+    pdf_color_map = {
+        "before": "#4e79a7",
+        "during": "#f28e2b",
+        "after": "#e15759",
+    }
+
+    # Collect curves for combined plot
+    pdf_combined_curves: list[dict[str, np.ndarray | str]] = []
+
+    for pdf_period, pdf_target_ttm in pdf_period_configs.items():
+        # ----------------------------------------------------
+        # (1) Filter entire atm_otm_options table
+        # ----------------------------------------------------
+        pdf_mask = pdf_period_mask(atm_otm_options["timestamp"], pdf_period)
+        pdf_subset = atm_otm_options.loc[pdf_mask].dropna(
+            subset=[
+                "forward_price",
+                "strike",
+                "implied_vol",
+                "time_to_maturity_days",
+                "time_to_maturity_years",
+            ]
+        )
+
+        pdf_subset = pdf_subset[
+            (pdf_subset["strike"] > 0)
+            & (pdf_subset["forward_price"] > 0)
+            & (pdf_subset["time_to_maturity_days"] == pdf_target_ttm)
+        ]
+
+        if pdf_subset.empty:
+            print(f"No quotes for '{pdf_period}' with TTM {pdf_target_ttm}d.")
+            continue
+
+        # ----------------------------------------------------
+        # (2) Retrieve fitted SABR parameters
+        # ----------------------------------------------------
+        pdf_row = calibration_summary.loc[
+            calibration_summary["period"] == pdf_period.title()
+        ]
+
+        if pdf_row.empty:
+            print(f"No calibration parameters for '{pdf_period}'.")
+            continue
+
+        pdf_row = pdf_row.iloc[0]
+
+        pdf_F = float(pdf_row["avg_forward"])
+        pdf_T = float(pdf_row["avg_T_years"])
+        pdf_alpha = float(pdf_row["alpha"])
+        pdf_beta = float(pdf_row["beta"])
+        pdf_rho = float(pdf_row["rho"])
+        pdf_nu = float(pdf_row["nu"])
+
+        # ----------------------------------------------------
+        # (3) Build strike grid
+        # ----------------------------------------------------
+        pdf_strikes_obs = pdf_subset["strike"].to_numpy()
+        pdf_k_min, pdf_k_max = pdf_strikes_obs.min(), pdf_strikes_obs.max()
+
+        pdf_k_low = 0.8 * pdf_k_min
+        pdf_k_high = 1.2 * pdf_k_max
+
+        pdf_K_grid = np.linspace(pdf_k_low, pdf_k_high, 400)
+
+        # ----------------------------------------------------
+        # (4) Compute SABR vols + Black call prices
+        # ----------------------------------------------------
+        pdf_sigmas = np.array(
+            [
+                SABR(pdf_F, K_, pdf_T, pdf_alpha, pdf_beta, pdf_rho, pdf_nu)
+                for K_ in pdf_K_grid
+            ]
+        )
+
+        # py_vollib.black.black(flag, F, K, t, r, sigma)
+        pdf_call_prices = np.array(
+            [
+                pyv_black(
+                    "c",  # call
+                    pdf_F,  # forward
+                    K_,  # strike
+                    pdf_T,  # maturity
+                    RISK_FREE_RATE,  # risk-free rate
+                    vol_,  # SABR implied vol
+                )
+                for K_, vol_ in zip(pdf_K_grid, pdf_sigmas)
+            ]
+        )
+
+        # ----------------------------------------------------
+        # (5) Risk-neutral density: second derivative wrt strike
+        # ----------------------------------------------------
+        pdf_dK = pdf_K_grid[1] - pdf_K_grid[0]
+
+        pdf_second_deriv = (
+            pdf_call_prices[2:] - 2 * pdf_call_prices[1:-1] + pdf_call_prices[:-2]
+        ) / (pdf_dK**2)
+
+        # py_vollib prices are discounted, so multiply by exp(rT)
+        pdf_density = np.exp(RISK_FREE_RATE * pdf_T) * pdf_second_deriv
+
+        # Align x-grid (interior points)
+        pdf_K_mid = pdf_K_grid[1:-1]
+
+        # ----------------------------------------------------
+        # (6) Convert x-axis to log-moneyness and plot per-period
+        # ----------------------------------------------------
+        pdf_logm_mid = np.log(pdf_K_mid / pdf_F)
+
+        fig1, ax1 = plt.subplots(figsize=(8, 4))
+
+        pdf_color = pdf_color_map.get(pdf_period, None)
+        ax1.plot(
+            pdf_logm_mid,
+            pdf_density,
+            color=pdf_color,
+            linewidth=2.0,
+            label=f"{pdf_period.title()} density",
+        )
+
+        ax1.set_title(
+            f"SABR-implied Risk-neutral PDF – {pdf_period.title()} (TTM {pdf_target_ttm}d)"
+        )
+        ax1.set_xlabel("Log-moneyness  ln(K / F)")
+        ax1.set_ylabel("Risk-neutral density  f_Q(K)")
+        ax1.grid(True, linestyle="--", alpha=0.3)
+        ax1.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+
+        # Store for combined plot
+        pdf_combined_curves.append(
+            {
+                "period": pdf_period,
+                "logm": pdf_logm_mid,
+                "density": pdf_density,
+            }
+        )
+
+    # --------------------------------------------------------
+    # (7) Combined plot: before, during, after together
+    # --------------------------------------------------------
+    if pdf_combined_curves:
+        fig2, ax2 = plt.subplots(figsize=(9, 5))
+
+        for pdf_curve in pdf_combined_curves:
+            pdf_period_name = pdf_curve["period"]
+            pdf_logm_vals = pdf_curve["logm"]
+            pdf_density_vals = pdf_curve["density"]
+
+            pdf_color = pdf_color_map.get(pdf_period_name, None)
+            ax2.plot(
+                pdf_logm_vals,
+                pdf_density_vals,
+                color=pdf_color,
+                linewidth=2.0,
+                label=pdf_period_name.title(),
+            )
+
+        ax2.set_title("SABR-implied Risk-neutral PDFs – Before vs During vs After")
+        ax2.set_xlabel("Log-moneyness  ln(K / F)")
+        ax2.set_ylabel("Risk-neutral density  f_Q(K)")
+        ax2.grid(True, linestyle="--", alpha=0.3)
+        ax2.legend(loc="best")
         plt.tight_layout()
         plt.show()
 
