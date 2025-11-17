@@ -122,7 +122,7 @@ def _(Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd):
                     time_delta_days = (
                         merged["expiry"] - merged["timestamp"]
                     ).dt.total_seconds() / 86400
-                    merged["time_to_maturity_days"] = time_delta_days.round().astype(
+                    merged["time_to_maturity_days"] = np.floor(time_delta_days).astype(
                         "Int64"
                     )
                     merged["time_to_maturity_years"] = time_delta_days / 365.25
