@@ -421,8 +421,15 @@ def _(np, pd, plt):
         min_quotes: int = 5,
         maturity_tolerance: int = 0,
         color_map: dict[str, str] | None = None,
+        selected_periods: Sequence[str] | None = None,
+        plot_title: str | None = None,
     ) -> None:
-        """Plot a single target TTM smile for each requested period."""
+        """Plot a single target TTM smile for each requested period.
+
+        Set ``selected_periods`` to a subset such as ("before", "during") to
+        compare only those windows without editing the base configuration, and
+        provide ``plot_title`` to override the default chart title.
+        """
 
         def _period_mask(timestamps: pd.Series, window: str) -> pd.Series:
             event_end = pd.Timestamp("2025-04-03 09:30:00")
@@ -460,6 +467,17 @@ def _(np, pd, plt):
 
         if not configs:
             raise ValueError("period_configs cannot be empty.")
+
+        if selected_periods is not None:
+            filtered: list[tuple[str, int, str | None]] = []
+            for period_label in selected_periods:
+                matches = [cfg for cfg in configs if cfg[0] == period_label]
+                if not matches:
+                    raise ValueError(
+                        f"Requested period '{period_label}' not found in period_configs."
+                    )
+                filtered.extend(matches)
+            configs = filtered
 
         palette = color_map or {
             "before": "#4e79a7",
@@ -508,7 +526,7 @@ def _(np, pd, plt):
                 "Check period_maturities, tolerance, or min_quotes."
             )
 
-        ax.set_title("Single-TTM Volatility Smiles")
+        ax.set_title(plot_title or "Single-TTM Volatility Smiles")
         ax.set_xlabel("Log-moneyness  ln(K / F)")
         ax.set_ylabel("Implied Volatility")
         ax.grid(True, linestyle="--", alpha=0.3)
@@ -614,6 +632,7 @@ def _(mo):
     mo.md(r"""
     ## Visualise IV smile for each TTM (day) for before, during and after Liberation Day
     """)
+    return
 
 
 @app.cell
@@ -634,30 +653,43 @@ def _(mo):
     mo.md(r"""
     ## Visualise IV smile for before vs during, and before vs after
     """)
+    return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(atm_otm_options, plot_single_ttm_smiles, plt):
-    # Plot a single-TTM smile for each event window with custom labels.
-    period_configs1 = [
-        ("before", 13, "Before"),
-        ("during", 13, "During"),
-        ("during", 13, "During"),
-    ]
-    plot_single_ttm_smiles(atm_otm_options, period_configs1, min_quotes=3)
+    # Compare before vs during using a shared 13-day maturity target.
+    period_configs1 = {
+        "before": 13,
+        "during": 13,
+        "after": 12,
+    }
+    plot_single_ttm_smiles(
+        atm_otm_options,
+        period_configs1,
+        min_quotes=3,
+        selected_periods=("during", "before"),
+        plot_title="Single-TTM Volatility Smiles - Before vs During",
+    )
     plt.show()
     return
 
 
 @app.cell
 def _(atm_otm_options, plot_single_ttm_smiles, plt):
-    # Plot a single-TTM smile for each event window with custom labels.
-    period_configs2 = [
-        ("before", 13, "Before"),
-        ("after", 12, "After"),
-        ("after", 12, "After"),
-    ]
-    plot_single_ttm_smiles(atm_otm_options, period_configs2, min_quotes=3)
+    # Compare before vs after using dedicated 13d/12d maturities.
+    period_configs2 = {
+        "before": 13,
+        "during": 13,
+        "after": 12,
+    }
+    plot_single_ttm_smiles(
+        atm_otm_options,
+        period_configs2,
+        min_quotes=3,
+        selected_periods=("before", "after"),
+        plot_title="Single-TTM Volatility Smiles - Before vs After",
+    )
     plt.show()
     return
 
