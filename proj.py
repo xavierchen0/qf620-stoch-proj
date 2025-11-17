@@ -238,6 +238,8 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(np, pd, plt):
+    from collections.abc import Mapping, Sequence
+
     # Provide reusable plotting helpers for exploratory analysis.
     SESSION_COLORS = {"RTH": "#2ca02c", "ETH": "#1f77b4"}
 
@@ -405,7 +407,115 @@ def _(np, pd, plt):
         ax.legend(title="TTM (days)", loc="best")
         plt.tight_layout()
 
-    return plot_timeseries, plot_vol_smiles_by_period
+    def plot_single_ttm_smiles(
+        options: pd.DataFrame,
+        period_configs: Mapping[str, int]
+        | Sequence[tuple[str, int]]
+        | Sequence[tuple[str, int, str]],
+        *,
+        event_day: pd.Timestamp = pd.Timestamp("2025-04-02 16:00:00"),
+        maturity_col: str = "time_to_maturity_days",
+        forward_col: str = "forward_price",
+        strike_col: str = "strike",
+        iv_col: str = "implied_vol",
+        min_quotes: int = 5,
+        maturity_tolerance: int = 0,
+        color_map: dict[str, str] | None = None,
+    ) -> None:
+        """Plot a single target TTM smile for each requested period."""
+
+        def _period_mask(timestamps: pd.Series, window: str) -> pd.Series:
+            event_end = pd.Timestamp("2025-04-03 09:30:00")
+            if window == "before":
+                return timestamps < event_day
+            if window == "during":
+                return (timestamps >= event_day) & (timestamps < event_end)
+            if window == "after":
+                return timestamps >= event_end
+            raise ValueError("period must be one of {'before', 'during', 'after'}")
+
+        if options.empty:
+            raise ValueError("No option data provided for plotting.")
+
+        if isinstance(period_configs, Mapping):
+            configs = [(period, ttm, None) for period, ttm in period_configs.items()]
+        else:
+            configs = []
+            for entry in period_configs:
+                if isinstance(entry, str):
+                    raise TypeError(
+                        "Sequence-based configs must supply (period, maturity) tuples."
+                    )
+                length = len(entry)
+                if length == 2:
+                    period, ttm = entry
+                    label = None
+                elif length == 3:
+                    period, ttm, label = entry
+                else:
+                    raise ValueError(
+                        "Configs must be (period, maturity) or (period, maturity, label)."
+                    )
+                configs.append((period, ttm, label))
+
+        if not configs:
+            raise ValueError("period_configs cannot be empty.")
+
+        palette = color_map or {
+            "before": "#4e79a7",
+            "during": "#f28e2b",
+            "after": "#e15759",
+        }
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        plotted_periods: list[str] = []
+
+        for period, target_ttm, custom_label in configs:
+            mask = _period_mask(options["timestamp"], period)
+            subset = options.loc[mask].dropna(
+                subset=[forward_col, strike_col, iv_col, maturity_col]
+            )
+            if subset.empty:
+                continue
+
+            subset = subset[(subset[forward_col] > 0) & (subset[strike_col] > 0)]
+            if subset.empty:
+                continue
+
+            maturity_values = subset[maturity_col].astype(float)
+            subset = subset[(maturity_values - target_ttm).abs() <= maturity_tolerance]
+            if len(subset) < min_quotes:
+                continue
+
+            subset = subset.copy()
+            subset["log_moneyness"] = np.log(subset[strike_col] / subset[forward_col])
+            subset = subset.sort_values("log_moneyness")
+
+            base_label = custom_label or period.capitalize()
+            label = f"{base_label} (TTM {int(target_ttm)})"
+            ax.plot(
+                subset["log_moneyness"],
+                subset[iv_col],
+                label=label,
+                color=palette.get(period, None),
+                linewidth=1.8,
+            )
+            plotted_periods.append(period)
+
+        if not plotted_periods:
+            raise ValueError(
+                "No period had enough quotes to plot a single-TTM smile. "
+                "Check period_maturities, tolerance, or min_quotes."
+            )
+
+        ax.set_title("Single-TTM Volatility Smiles")
+        ax.set_xlabel("Log-moneyness  ln(K / F)")
+        ax.set_ylabel("Implied Volatility")
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend(loc="best")
+        plt.tight_layout()
+
+    return plot_single_ttm_smiles, plot_timeseries, plot_vol_smiles_by_period
 
 
 @app.cell(hide_code=True)
@@ -500,6 +610,13 @@ def _(RISK_FREE_RATE, options_df, pd, pyv_iv):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ## Visualise IV smile for each TTM (day) for before, during and after Liberation Day
+    """)
+
+
+@app.cell
 def _(atm_otm_options, plot_vol_smiles_by_period, plt):
     # Plot 15-day volatility smiles for the three event windows.
     subset = atm_otm_options.dropna(
@@ -509,6 +626,39 @@ def _(atm_otm_options, plot_vol_smiles_by_period, plt):
     for period in ("before", "during", "after"):
         plot_vol_smiles_by_period(subset, period, min_quotes=3)
         plt.show()
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Visualise IV smile for before vs during, and before vs after
+    """)
+
+
+@app.cell
+def _(atm_otm_options, plot_single_ttm_smiles, plt):
+    # Plot a single-TTM smile for each event window with custom labels.
+    period_configs1 = [
+        ("before", 13, "Before"),
+        ("during", 13, "During"),
+        ("during", 13, "During"),
+    ]
+    plot_single_ttm_smiles(atm_otm_options, period_configs1, min_quotes=3)
+    plt.show()
+    return
+
+
+@app.cell
+def _(atm_otm_options, plot_single_ttm_smiles, plt):
+    # Plot a single-TTM smile for each event window with custom labels.
+    period_configs2 = [
+        ("before", 13, "Before"),
+        ("after", 12, "After"),
+        ("after", 12, "After"),
+    ]
+    plot_single_ttm_smiles(atm_otm_options, period_configs2, min_quotes=3)
+    plt.show()
     return
 
 
