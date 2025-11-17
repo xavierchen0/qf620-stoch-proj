@@ -19,6 +19,7 @@ dependencies = [
     "pandas>=2.3.3",
     "py-lets-be-rational",
     "py-vollib",
+    "pysabr>=0.4.1",
     "scipy>=1.16.2",
     "watchdog>=6.0.0",
 ]
