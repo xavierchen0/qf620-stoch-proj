@@ -53,17 +53,7 @@ def _():
     PROJECT_ROOT = Path(".")
     SESSION_FOLDERS = {"ETH": PROJECT_ROOT / "ETH", "RTH": PROJECT_ROOT / "RTH"}
     RISK_FREE_RATE = 0.02
-    return (
-        Path,
-        RISK_FREE_RATE,
-        SESSION_FOLDERS,
-        mo,
-        np,
-        pd,
-        plt,
-        pv_forward_price,
-        pyv_iv,
-    )
+    return Path, RISK_FREE_RATE, SESSION_FOLDERS, mo, np, pd, plt, pyv_iv
 
 
 @app.cell(hide_code=True)
@@ -75,7 +65,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd, pv_forward_price):
+def _(Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd):
     # Helper routines: parsing CSVs, melting option quotes, and orchestrating session-level loads.
     def parse_timestamped_csv(csv_path: Path) -> pd.DataFrame:
         """Load a CSV whose first column stores timestamps and return a tidy timestamp column."""
@@ -198,13 +188,10 @@ def _(Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd, pv_forward_price):
         long_df = long_df.dropna(
             subset=["option_price", "SPX", "strike", "time_to_maturity_years"]
         )
-        bs_forward = pv_forward_price(
-            long_df["SPX"], long_df["time_to_maturity_years"], RISK_FREE_RATE
-        )
         undiscounted_intrinsic = np.where(
             long_df["option_type"] == "call",
-            np.maximum(bs_forward - long_df["strike"], 0.0),
-            np.maximum(long_df["strike"] - bs_forward, 0.0),
+            np.maximum(long_df["forward_price"] - long_df["strike"], 0.0),
+            np.maximum(long_df["strike"] - long_df["forward_price"], 0.0),
         )
         discount_factor = np.exp(-RISK_FREE_RATE * long_df["time_to_maturity_years"])
         long_df["intrinsic_value"] = undiscounted_intrinsic * discount_factor
@@ -418,6 +405,8 @@ def _(np, pd, plt):
         ax.legend(title="TTM (days)", loc="best")
         plt.tight_layout()
 
+    return plot_timeseries, plot_vol_smiles_by_period
+
 
 @app.cell(hide_code=True)
 def _(mo):
@@ -516,9 +505,6 @@ def _(atm_otm_options, plot_vol_smiles_by_period, plt):
     subset = atm_otm_options.dropna(
         subset=["time_to_maturity_days", "implied_vol", "strike", "timestamp"]
     ).copy()
-    subset["time_to_maturity_days"] = (
-        subset["time_to_maturity_days"].round().astype(int)
-    )
 
     for period in ("before", "during", "after"):
         plot_vol_smiles_by_period(subset, period, min_quotes=3)
