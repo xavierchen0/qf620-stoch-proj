@@ -337,7 +337,7 @@ def _(np, pd, plt):
         # 1) Select the event window: before / during / after.
         event_ts = event_day
         # End of the event day = midnight of the *next* day
-        event_day_end = event_ts.normalize() + pd.Timedelta(days=1)
+        event_day_end = pd.Timestamp("2025-04-03 09:30:00")
 
         period_lower = period.lower()
         if period_lower == "before":
