@@ -65,8 +65,8 @@ def _():
         np,
         pd,
         plt,
-        pyv_iv,
         pyv_black,
+        pyv_iv,
     )
 
 
@@ -270,7 +270,6 @@ def _(BETA, Path, RISK_FREE_RATE, SESSION_FOLDERS, np, pd):
             err += (vol - SABR(F, strikes[i], T, x[0], beta, x[1], x[2])) ** 2
 
         return err
-
     return SABR, load_assets, load_option_book, sabrcalibration
 
 
@@ -578,7 +577,6 @@ def _(np, pd, plt):
         ax.grid(True, linestyle="--", alpha=0.3)
         ax.legend(loc="best")
         plt.tight_layout()
-
     return plot_single_ttm_smiles, plot_timeseries, plot_vol_smiles_by_period
 
 
@@ -633,7 +631,7 @@ def _(mo):
 def _(assets_df, load_option_book):
     # Build the consolidated option dataframe with bid/ask/mid quotes.
     options_df = load_option_book(assets_df)
-    options_df.head()
+    options_df
     return (options_df,)
 
 
@@ -669,7 +667,7 @@ def _(RISK_FREE_RATE, options_df, pd, pyv_iv):
         )
 
     atm_otm_options["implied_vol"] = atm_otm_options.apply(_compute_implied_vol, axis=1)
-    atm_otm_options.head()
+    atm_otm_options
     return (atm_otm_options,)
 
 
@@ -741,15 +739,7 @@ def _(atm_otm_options, plot_single_ttm_smiles, plt):
 
 
 @app.cell
-def _(
-    BETA,
-    SABR,
-    atm_otm_options,
-    least_squares,
-    np,
-    pd,
-    sabrcalibration,
-):
+def _(BETA, SABR, atm_otm_options, least_squares, np, pd, sabrcalibration):
     period_configs3 = {
         "before": 13,
         "during": 13,
@@ -848,11 +838,11 @@ def _(
 
     calibration_summary = pd.DataFrame(calibration_rows)
     calibration_summary
-    return calibration_summary
+    return (calibration_summary,)
 
 
 @app.cell
-def _(atm_otm_options, calibration_summary, SABR, plt, np, pd, BETA):
+def _(SABR, atm_otm_options, calibration_summary, np, pd, plt):
     """
     For each period (before, during, after), take the target TTM,
     filter the full atm_otm_options panel for that period + TTM,
@@ -974,20 +964,18 @@ def _(atm_otm_options, calibration_summary, SABR, plt, np, pd, BETA):
         ax.legend(loc="best")
         plt.tight_layout()
         plt.show()
-
     return
 
 
 @app.cell
 def _(
+    RISK_FREE_RATE,
+    SABR,
     atm_otm_options,
     calibration_summary,
-    SABR,
     np,
     pd,
     plt,
-    BETA,
-    RISK_FREE_RATE,
     pyv_black,
 ):
     """
@@ -1186,7 +1174,212 @@ def _(
         ax2.legend(loc="best")
         plt.tight_layout()
         plt.show()
+    return
 
+
+@app.cell
+def _(
+    RISK_FREE_RATE,
+    SABR,
+    atm_otm_options,
+    calibration_summary,
+    np,
+    pd,
+    pyv_black,
+):
+    """
+    Compute summary statistics (mean, std, skew, kurtosis)
+    of the SABR-implied risk-neutral density for
+    before / during / after.
+
+    Moments are computed for K under the risk-neutral measure,
+    and also for log-moneyness ln(K / F_rep).
+    """
+
+    stats_period_configs = {
+        "before": 13,
+        "during": 13,
+        "after": 12,
+    }
+
+    def stats_period_mask(timestamps: pd.Series, window: str) -> pd.Series:
+        stats_event_start = pd.Timestamp("2025-04-02 16:00:00")
+        stats_event_end = pd.Timestamp("2025-04-03 09:30:00")
+        if window == "before":
+            return timestamps < stats_event_start
+        if window == "during":
+            return (timestamps >= stats_event_start) & (timestamps < stats_event_end)
+        if window == "after":
+            return timestamps >= stats_event_end
+        raise ValueError("window must be one of {'before','during','after'}")
+
+    stats_rows: list[dict[str, float | str]] = []
+
+    for stats_period, stats_target_ttm in stats_period_configs.items():
+        # ----------------------------------------------------
+        # (1) Filter atm_otm_options for this period + TTM
+        # ----------------------------------------------------
+        stats_mask = stats_period_mask(atm_otm_options["timestamp"], stats_period)
+        stats_subset = atm_otm_options.loc[stats_mask].dropna(
+            subset=[
+                "forward_price",
+                "strike",
+                "implied_vol",
+                "time_to_maturity_days",
+                "time_to_maturity_years",
+            ]
+        )
+
+        stats_subset = stats_subset[
+            (stats_subset["strike"] > 0)
+            & (stats_subset["forward_price"] > 0)
+            & (stats_subset["time_to_maturity_days"] == stats_target_ttm)
+        ]
+
+        if stats_subset.empty:
+            print(
+                f"[density stats] No quotes for '{stats_period}' with TTM {stats_target_ttm}d."
+            )
+            continue
+
+        # ----------------------------------------------------
+        # (2) Get fitted SABR parameters for this period
+        # ----------------------------------------------------
+        stats_row_calib = calibration_summary.loc[
+            calibration_summary["period"] == stats_period.title()
+        ]
+        if stats_row_calib.empty:
+            print(f"[density stats] No calibration parameters for '{stats_period}'.")
+            continue
+
+        stats_row_calib = stats_row_calib.iloc[0]
+
+        stats_F = float(stats_row_calib["avg_forward"])
+        stats_T = float(stats_row_calib["avg_T_years"])
+        stats_alpha = float(stats_row_calib["alpha"])
+        stats_beta = float(stats_row_calib["beta"])
+        stats_rho = float(stats_row_calib["rho"])
+        stats_nu = float(stats_row_calib["nu"])
+
+        # ----------------------------------------------------
+        # (3) Build strike grid
+        # ----------------------------------------------------
+        stats_strikes_obs = stats_subset["strike"].to_numpy()
+        stats_k_min, stats_k_max = stats_strikes_obs.min(), stats_strikes_obs.max()
+
+        stats_k_low = 0.8 * stats_k_min
+        stats_k_high = 1.2 * stats_k_max
+
+        stats_K_grid = np.linspace(stats_k_low, stats_k_high, 400)
+
+        # ----------------------------------------------------
+        # (4) SABR vols + py_vollib Black call prices
+        # ----------------------------------------------------
+        stats_sigmas = np.array(
+            [
+                SABR(stats_F, K_, stats_T, stats_alpha, stats_beta, stats_rho, stats_nu)
+                for K_ in stats_K_grid
+            ]
+        )
+
+        # py_vollib.black.black(flag, F, K, t, r, sigma)
+        stats_call_prices = np.array(
+            [
+                pyv_black(
+                    "c",
+                    stats_F,  # forward
+                    K_,  # strike
+                    stats_T,  # maturity
+                    RISK_FREE_RATE,  # risk-free rate
+                    vol_,  # SABR implied vol
+                )
+                for K_, vol_ in zip(stats_K_grid, stats_sigmas)
+            ]
+        )
+
+        # ----------------------------------------------------
+        # (5) Risk-neutral density via 2nd derivative w.r.t. K
+        # ----------------------------------------------------
+        stats_dK = stats_K_grid[1] - stats_K_grid[0]
+
+        stats_second_deriv = (
+            stats_call_prices[2:] - 2 * stats_call_prices[1:-1] + stats_call_prices[:-2]
+        ) / (stats_dK**2)
+
+        # py_vollib prices are discounted; adjust by exp(rT)
+        stats_density_raw = np.exp(RISK_FREE_RATE * stats_T) * stats_second_deriv
+
+        # Interior K points
+        stats_K_mid = stats_K_grid[1:-1]
+
+        # ----------------------------------------------------
+        # (6) Normalise density and compute moments
+        # ----------------------------------------------------
+        # Clip small negative numerical noise
+        stats_density_pos = np.clip(stats_density_raw, 0.0, None)
+
+        stats_mass = np.sum(stats_density_pos * stats_dK)
+        if stats_mass <= 0:
+            print(
+                f"[density stats] Non-positive total mass for '{stats_period}'. Skipping."
+            )
+            continue
+
+        # Risk-neutral probability weights over K_mid
+        stats_weights = stats_density_pos * stats_dK / stats_mass
+
+        # Mean and variance of K
+        stats_mean_K = float(np.sum(stats_weights * stats_K_mid))
+        stats_var_K = float(np.sum(stats_weights * (stats_K_mid - stats_mean_K) ** 2))
+        stats_std_K = float(np.sqrt(stats_var_K)) if stats_var_K > 0 else 0.0
+
+        # Avoid divide-by-zero when computing skew/kurt
+        if stats_std_K > 0:
+            stats_central_norm = (stats_K_mid - stats_mean_K) / stats_std_K
+            stats_skew_K = float(np.sum(stats_weights * stats_central_norm**3))
+            stats_kurt_K = float(np.sum(stats_weights * stats_central_norm**4))
+        else:
+            stats_skew_K = np.nan
+            stats_kurt_K = np.nan
+
+        # Also compute mean/std for log-moneyness x = ln(K/F)
+        stats_logm_mid = np.log(stats_K_mid / stats_F)
+        stats_mean_logm = float(np.sum(stats_weights * stats_logm_mid))
+        stats_var_logm = float(
+            np.sum(stats_weights * (stats_logm_mid - stats_mean_logm) ** 2)
+        )
+        stats_std_logm = float(np.sqrt(stats_var_logm)) if stats_var_logm > 0 else 0.0
+
+        stats_rows.append(
+            {
+                "period": stats_period.title(),
+                "ttm_days": stats_target_ttm,
+                "F_rep": stats_F,
+                "T_years_rep": stats_T,
+                "mean_K": stats_mean_K,
+                "std_K": stats_std_K,
+                "skew_K": stats_skew_K,
+                "kurtosis_K": stats_kurt_K,
+                "mean_logm": stats_mean_logm,
+                "std_logm": stats_std_logm,
+            }
+        )
+
+    density_stats_summary = pd.DataFrame(stats_rows)
+    density_stats_summary
+    return
+
+
+@app.cell
+def _(options_df):
+    print(len(options_df))
+    options_df.sort_values(by="timestamp").tail()
+    return
+
+
+@app.cell
+def _(assets_df):
+    assets_df
     return
 
 
